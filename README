@@ -1,0 +1,16 @@
+As the dataset is too large to upload into github.
+You can get access to the dataset used in our paper via the following link.
+
+https://drive.google.com/open?id=19L8l1J1EiW8aWaB4IXcZXpUhll9zAhsA
+
+@inproceedings{Shen:19,
+  author    = {Aili Shen and
+               Bahar Salehi and
+               Timothy Baldwin and
+               Jianzhong Qi},
+  title     = {A Joint Model for Multimodal Document Quality Assessment},
+  booktitle = {19th {ACM/IEEE} Joint Conference on Digital Libraries, {JCDL} 2019,
+               Champaign, IL, USA, June 2-6, 2019},
+  pages     = {107--110},
+  year      = {2019}
+}
