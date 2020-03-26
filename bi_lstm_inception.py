@@ -1,10 +1,18 @@
-from __future__ import division, print_function, absolute_import
-import csv
-import numpy as np
+from keras import applications
+from keras.preprocessing.image import ImageDataGenerator
+from keras import optimizers
+from keras.models import Sequential, Model 
+from keras.layers import Dropout, Flatten, Dense, GlobalAveragePooling2D, merge
+from keras import backend as K 
+from keras.callbacks import ModelCheckpoint, LearningRateScheduler, TensorBoard, EarlyStopping
+from keras.models import load_model
+from PIL import ImageFile
+from tensorflow.contrib.slim.python.slim.nets import inception
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 import tensorflow as tf
-from tensorflow.contrib import rnn
-from tensorflow.contrib.rnn import LSTMStateTuple, LSTMCell, GRUCell
-import tensorflow.contrib.layers as layers
+import logging
+import numpy as np
+from sklearn.metrics import classification_report, confusion_matrix
 
 import random
 import time
@@ -23,6 +31,21 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn import metrics
 from nltk.probability import FreqDist
 import datetime
+from sklearn.metrics import classification_report, confusion_matrix
+
+from os import listdir
+from os.path import isfile, join
+import shutil
+
+import keras
+from keras.layers import Dense, Input, Flatten
+from keras.layers import Embedding, Reshape, Lambda
+from keras.layers import MaxPooling1D, Embedding, Dropout, LSTM, Bidirectional, TimeDistributed, GlobalAveragePooling1D
+from keras.models import Model
+from keras import optimizers
+from keras.engine.topology import Layer
+from keras.models import load_model
+from keras import backend as K 
 
 
 logger = logging.getLogger()
@@ -33,66 +56,96 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
+tf.flags.DEFINE_float('learning_rate', 1e-4, 'learning rate to fine tune the last layer')
+tf.flags.DEFINE_integer('img_width', 360, 'resized image width')
+tf.flags.DEFINE_integer('img_height', 360, 'resized image height')
+#tf.flags.DEFINE_boolean('horizontal_flip', False, 'whether to flip images horizontally')
+tf.flags.DEFINE_boolean('dropout_flag', True, 'whether to dropout during training')
+tf.flags.DEFINE_boolean('finetuning_last', False, 'whether to finetuning the last layer first')
+tf.flags.DEFINE_string('train_data_dir', './training_1000_2000', 'training directory')
+tf.flags.DEFINE_string('validation_data_dir', './validation_1000_2000', 'validation directory')
+tf.flags.DEFINE_string('test_data_dir', './test_1000_2000', 'test directory')
+tf.flags.DEFINE_integer('nb_train_samples', 24000, 'number of training samples')
+tf.flags.DEFINE_integer('nb_validation_samples', 3000, 'number of validation samples')
+tf.flags.DEFINE_integer('nb_test_samples', 2794, 'number of test samples')
+tf.flags.DEFINE_integer('nb_classes', 6, 'number of classes')
+tf.flags.DEFINE_string('saved_model_name', 'keras_inception.h5', 'the saved model file name')
+tf.flags.DEFINE_integer('batch_size', 32, 'batch size')
+
 tf.flags.DEFINE_integer("model_size", 350, "length of trimmed doc, number of sentences in a doc")
 tf.flags.DEFINE_integer("sentence_length", 20, "number of words in a sentence")
 tf.flags.DEFINE_integer("embedding_size", 50, "output size of the embedding layer")
-tf.flags.DEFINE_integer("batch_size", 128, "batch training size")
-tf.flags.DEFINE_integer("nb_epochs",30, "number of training epochs")
+tf.flags.DEFINE_integer("nb_epochs",50, "number of training epochs")
 tf.flags.DEFINE_integer("frequency_bound", 20, "the lowest frequency for a word to be appeared in the dictionary")
 tf.flags.DEFINE_integer("MAX_FILE_ID", 29794, "total number of instances")
 tf.flags.DEFINE_integer("cell_size", 256, "number of neurons per layer")
-tf.flags.DEFINE_float("learning_rate", 0.001, "lower -> slower training, initial learning rate")
 tf.flags.DEFINE_float("max_grad_norm", 40.0, "clip gradients to this norm.")
 tf.flags.DEFINE_float("dropout_ratio", 0.5, "drop out probability, keep probability (1-dropout)")
-tf.flags.DEFINE_integer("successive_decrease", 10, "number of successive decrease performance in validation dataset")
+tf.flags.DEFINE_integer("successive_decrease", 20, "number of successive decrease performance in validation dataset")
 tf.flags.DEFINE_string("result", "result.txt", "the file name of result")
 tf.flags.DEFINE_boolean("recompute_flag", False, "indicate whether to parse the document")
 tf.flags.DEFINE_integer("hidden_size", 60, "hidden dimension after lstm output")
 tf.flags.DEFINE_integer("data_flag", 5, "indicate which data set to use: 1 use 20432 data set; 2 use 29456 data set; 3 use 59451 data set")
-tf.flags.DEFINE_integer("seed", 1, "set random seed to get reproducible result")
-tf.flags.DEFINE_integer('runs', 10, 'how manyy runs to run to get average result')
 
 FLAGS = tf.flags.FLAGS
 
-#np.random.seed(FLAGS.seed)
-
 if FLAGS.data_flag == 1:
     # using data set 20432
-    data_dir = "../dataset_20432"
-    label_file = "../label_20432"
-elif FLAGS.data_flag == 2:
-    # using data set 29456
-    data_dir = "../dataset_29456"
-    label_file = "../label_29456"
-elif FLAGS.data_flag == 3:
-    #using data set 59451
-    data_dir = "../dataset_59451"
-  #  label_file = "label_29994"
-    label_file = "../label_59451"
-elif FLAGS.data_flag == 4:
-    #using imbalance data set 52110
-#     data_dir = "imbalance_data"
-#     label_file ="label_imbalance"
-    data_dir = "../dataset_50427"
-    label_file = "../label_50427"
+    data_dir = "../dataset_agg/sample_dataset/30_text"
+    label_file = "../dataset_agg/sample_dataset/30_label"
+
 elif FLAGS.data_flag == 5:
-    data_dir ="../cleaned_dataset_29794"
-    label_file = "../label_29794"
+    data_dir ="./cleaned_dataset_29794"
+    label_file = "./label_29794"
     #data_dir = "./sample_dataset/30_text"
     #label_file = "./sample_dataset//30_label"
+elif FLAGS.data_flag == 6:
+    train_dir = './data/ai_text/train'
+    train_label = './data/ai_text/train_label.txt'
+    
+    vali_dir = './data/ai_text/vali'
+    vali_label = './data/ai_text/vali_label.txt'
+    
+    test_dir = './data/ai_text/test'
+    test_label = './data/ai_text/test_label.txt'
+    
+elif FLAGS.data_flag == 7:
+    train_dir = './data/cl_text/train'
+    train_label = './data/cl_text/train_label.txt'
+    
+    vali_dir = './data/cl_text/vali'
+    vali_label = './data/cl_text/vali_label.txt'
+    
+    test_dir = './data/cl_text/test'
+    test_label = './data/cl_text/test_label.txt'
+    
+elif FLAGS.data_flag == 8:
+    train_dir = './data/lg_text/train'
+    train_label = './data/lg_text/train_label.txt'
+    
+    vali_dir = './data/lg_text/vali'
+    vali_label = './data/lg_text/vali_label.txt'
+    
+    test_dir = './data/lg_text/test'
+    test_label = './data/lg_text/test_label.txt'
 
+if FLAGS.nb_classes == 6:
+    qualities = ["fa","ga","b","c","start","stub"]
+elif FLAGS.nb_classes == 2:
+    qualities = ['0', '1']
 
-test_ratio = 0.8      
-nfolds = 1        # k-fold cross validation
-display_step = 10
+#train_data_dir = "./dataset_agg/sample_dataset/training_dataset"
+#validation_data_dir = "./dataset_agg/sample_dataset/validation_dataset"
+#train_data_dir = "./dataset_agg/sample_dataset/training_dataset"
+#validation_data_dir = "./dataset_agg/sample_dataset/validation_dataset"
+#test_data_dir = "./dataset_agg/sample_dataset/test_dataset"
+#train_data_dir = "./training_1000_2000"
+#validation_data_dir = "./validation_1000_2000"
+#test_data_dir = './test_1000_2000'
+#nb_train_samples = 24000
+#nb_validation_samples = 3000
+#nb_test_samples = 2794
 
-qualities = ["fa","ga","b","c","start","stub"]
-
-n_classes = len (qualities)
-
-save_dir = 'checkpoints/'
-
-#get the version and parameters info
 def get_processor_version():
     version = str(tf.__version__)
     logger.info("tensorflow version: %s", version)
@@ -114,6 +167,17 @@ def get_processor_version():
     logger.info("hidden dimension after reducing lstm output, %d", FLAGS.hidden_size)
     logger.info("data_flag? %d", FLAGS.data_flag)
     
+    logger.info('resized img width: %d', FLAGS.img_width)
+    logger.info('resized img height: %d', FLAGS.img_height)
+    logger.info('training directory: %s', FLAGS.train_data_dir)
+    logger.info('validation directory: %s', FLAGS.validation_data_dir)
+    logger.info('test_data_dir: %s', FLAGS.test_data_dir)
+    logger.info('number of training samples: %d', FLAGS.nb_train_samples)
+    logger.info('number of validation samples: %d', FLAGS.nb_validation_samples)
+    logger.info('number of test samples: %d', FLAGS.nb_test_samples)
+    logger.info('number of classes: %d', FLAGS.nb_classes)
+    logger.info('saved model file name: %s', FLAGS.saved_model_name)
+    
     
     tensorflow_info = "tensorflow version: "+str(version)+"\n"
     version_info = "sentence level with word trim lstm version"+"\n"
@@ -133,6 +197,17 @@ def get_processor_version():
     recompute_flag = "recompute flag? "+str(FLAGS.recompute_flag)+"\n"
     hidden_size = "hidden size "+str(FLAGS.hidden_size)+"\n"
     data_flag = "data flag? "+str(FLAGS.data_flag)+"\n"
+    
+    resized_width = 'resized image width '+str(FLAGS.img_width)+'\n'
+    resized_height = 'resized image height '+str(FLAGS.img_height)+'\n'
+    training_directory = 'image training directory '+FLAGS.train_data_dir+'\n'
+    validation_directory = 'image validation directory '+FLAGS.validation_data_dir+'\n'
+    test_directory = 'image test directory '+FLAGS.test_data_dir+'\n'
+    nb_train_samples = 'number of image training samples '+str(FLAGS.nb_train_samples)+'\n'
+    nb_validation_samples = 'number of image validation samples '+str(FLAGS.nb_validation_samples)+'\n'
+    nb_test_samples = 'number of image test samples '+str(FLAGS.nb_test_samples)+'\n'
+    nb_classes = 'number of classes '+str(FLAGS.nb_classes)+'\n'
+    saved_model = 'saved model file name: '+str(FLAGS.saved_model_name)+'\n'
 
 
     parameter_info = []
@@ -155,6 +230,17 @@ def get_processor_version():
     parameter_info.append(data_flag)
     parameter_info.append(hidden_size)
     
+    parameter_info.append(resized_width)
+    parameter_info.append(resized_height)
+    parameter_info.append(training_directory)
+    parameter_info.append(validation_directory)
+    parameter_info.append(test_directory)
+    parameter_info.append(nb_train_samples)
+    parameter_info.append(nb_validation_samples)
+    parameter_info.append(nb_test_samples)
+    parameter_info.append(nb_classes)
+    parameter_info.append(saved_model)
+    
     return parameter_info
 
 #load label file
@@ -166,9 +252,15 @@ def load_label (label_file):
 
 #load the content file
 def load_content (file_name):
-    with open(file_name) as f:
+    with open(file_name, 'r') as f:
         line = f.read()
         #f.read().decode("utf-8").replace("\n", "<eos>")
+        #return utils.to_unicode(line)
+        #return line.encode('latin-1')
+        #return str(line.encode('utf-16'))
+        #a = str(line)
+        #print(a)
+        #return str(line.strip())
         return utils.to_unicode(line)
     
 #tokenize doc into sentence level, then word level, and 
@@ -176,6 +268,105 @@ def load_content (file_name):
 #and number of words of each sentence for all sentence in a document (sentences_length_per_article), the number of total tokens for each doc
 #(total_tokens). e.g., I have a dog. But I want a cat. 
 #X is 'I', 'have', 'a', 'dog', '.', 'But', 'I', 'want', 'a', 'cat', '.'. nb_sentences is 2. sentences_length_per_article is [5, 6], total_tokens is 11 
+def tokenization_train_validation_test():
+    X = [] 
+    #record number of sentences per article
+    nb_sentences = [] 
+    #record length of all sentences per article
+    sentences_length_per_article = []
+    #record total number of tokens for each document
+    total_tokens = [] 
+    
+    train_file_list = [train_dir+'/'+f for f in listdir(train_dir) if isfile(join(train_dir, f))]
+    sorted_train_file_list = sorted(train_file_list, key=lambda x: (x.split('/')[-1].replace('.json', '').split('.')[0], x.split('/')[-1].replace('.json', '').split('.')[1]))
+
+    for i in range (0, len(sorted_train_file_list)):
+        file_name = sorted_train_file_list[i]
+        #print(file_name)
+#         file_name = data_dir + '/' + str(i + 1)
+        if i%200==0:
+            logger.info("read the %d file ", i) 
+        if os.path.isfile (file_name):
+            document = load_content(file_name)
+            sentences = tokenize.sent_tokenize(document)
+            nb_sentences.append(len(sentences))
+            temX = []
+            tem_tokens= 0
+            tem_sentences_length_per_article = []
+            #temX = [word_tokenize(sentence) for sentence in sentences]
+            for j in range(len(sentences)):
+#                 if j < 3:    
+#                     print (sentences[j])
+                tem = word_tokenize(sentences[j])
+                tem_tokens+=len(tem)
+                tem_sentences_length_per_article.extend([len(tem)])
+                temX.extend(tem)
+            
+            temX = [x.lower() for x in temX]
+            X.append(temX)
+            sentences_length_per_article.append(tem_sentences_length_per_article)
+            total_tokens.append(tem_tokens)
+
+    vali_file_list = [vali_dir+'/'+f for f in listdir(vali_dir) if isfile(join(vali_dir, f))]
+    sorted_vali_file_list = sorted(vali_file_list, key=lambda x: (x.split('/')[-1].replace('.json', '').split('.')[0], x.split('/')[-1].replace('.json', '').split('.')[1]))
+
+    for i in range (0, len(sorted_vali_file_list)):
+        file_name = sorted_vali_file_list[i]
+#         file_name = data_dir + '/' + str(i + 1)
+        if i%200==0:
+            logger.info("read the %d file ", i) 
+        if os.path.isfile (file_name):
+            document = load_content(file_name)
+            sentences = tokenize.sent_tokenize(document)
+            nb_sentences.append(len(sentences))
+            temX = []
+            tem_tokens= 0
+            tem_sentences_length_per_article = []
+            #temX = [word_tokenize(sentence) for sentence in sentences]
+            for j in range(len(sentences)):
+#                 if j < 3:    
+#                     print (sentences[j])
+                tem = word_tokenize(sentences[j])
+                tem_tokens+=len(tem)
+                tem_sentences_length_per_article.extend([len(tem)])
+                temX.extend(tem)
+            
+            temX = [x.lower() for x in temX]
+            X.append(temX)
+            sentences_length_per_article.append(tem_sentences_length_per_article)
+            total_tokens.append(tem_tokens)
+            
+    test_file_list = [test_dir+'/'+f for f in listdir(test_dir) if isfile(join(test_dir, f))]
+    sorted_test_file_list = sorted(test_file_list, key=lambda x: (x.split('/')[-1].replace('.json', '').split('.')[0], x.split('/')[-1].replace('.json', '').split('.')[1]))
+
+    for i in range (0, len(sorted_test_file_list)):
+        file_name = sorted_test_file_list[i]
+#         file_name = data_dir + '/' + str(i + 1)
+        if i%200==0:
+            logger.info("read the %d file ", i) 
+        if os.path.isfile (file_name):
+            document = load_content(file_name)
+            sentences = tokenize.sent_tokenize(document)
+            nb_sentences.append(len(sentences))
+            temX = []
+            tem_tokens= 0
+            tem_sentences_length_per_article = []
+            #temX = [word_tokenize(sentence) for sentence in sentences]
+            for j in range(len(sentences)):
+#                 if j < 3:    
+#                     print (sentences[j])
+                tem = word_tokenize(sentences[j])
+                tem_tokens+=len(tem)
+                tem_sentences_length_per_article.extend([len(tem)])
+                temX.extend(tem)
+            
+            temX = [x.lower() for x in temX]
+            X.append(temX)
+            sentences_length_per_article.append(tem_sentences_length_per_article)
+            total_tokens.append(tem_tokens)
+            
+    return X, nb_sentences, sentences_length_per_article, total_tokens
+
 def tokenization():
     X = [] 
     #record number of sentences per article
@@ -305,7 +496,7 @@ def get_trimmed_word2idx1(datasets):
 def get_trimmed_word2idx(datasets):
     #load glove model 
     #get the name of glove model with corresponding embedding size
-    glove_name = "../glove.6B/glove.6B."+str(FLAGS.embedding_size)+"d.txt"
+    glove_name = "./keras-bi-lstm/glove.6B."+str(FLAGS.embedding_size)+"d.txt"
 #     glove_name = "/home/ailishen/data_partition/ailishen/data_set/wiki.en.vec"
 #     glove_name = "wiki.en.vec"
     
@@ -496,156 +687,7 @@ def load_trimmed_nb_sentences (input_file):
     with open (input_file) as f:
         trimmed_nb_sentences = f.read().split('\t')
         return np.asarray(trimmed_nb_sentences) 
-
-class LSTM(object):
-    #vocab_size already including 'UNK' and padding 
-    def __init__(self, initializer=tf.random_normal_initializer(stddev=0.1), fw_cell=LSTMCell(FLAGS.cell_size), bw_cell = LSTMCell(FLAGS.cell_size), max_grad_norm = 4.0, vocab_size = 1000):
-        self._init = initializer
-        self._fw_cell = fw_cell
-        self._bw_cell = bw_cell
-        self._max_grad_norm = max_grad_norm
-        self.__build_input(vocab_size)
-        self.__build_vars(vocab_size)
-        self._embedding_init = self._embedding.assign(self._embedding_placeholder)
-        
-        self._pred = self.__rnn2(self._x, self._trimmed, self._sequence_length, self._keep_prob, self._dropout_flag)
-        logger.info('network established')
-                                          
-        #define loss and optimizer
-#         self._cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self._pred, labels=self._y))        
-        self._cost = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self._pred, labels=self._y))        
-
-#         self._modified_optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate).minimize(self._cost)
-       
-        self._optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate)
-          
-        # gradient pipeline
-        grads_and_vars = self._optimizer.compute_gradients(self._cost)
-        
-        #grads_and_vars = [(tf.clip_by_norm(g, self._max_grad_norm), v) for g,v in grads_and_vars]
-        clipped_grads_and_vars = []
-        for g, v in grads_and_vars:
-            if g is not None:
-                clipped_grads_and_vars.append((tf.clip_by_norm(g, self._max_grad_norm), v))
-            else:
-                clipped_grads_and_vars.append((g, v))
-                          
-        nil_grads_and_vars = []
-        for g, v in clipped_grads_and_vars:
-            if v.name in self._nil_vars:
-                nil_grads_and_vars.append((self.__zero_nil_slot(g), v))
-            else:
-                nil_grads_and_vars.append((g, v))
-                   
-        self._modified_optimizer = self._optimizer.apply_gradients(nil_grads_and_vars, name="train_op")
-            
-        logger.info('optimizer established')
-            
-
-        self._correct_pred = tf.equal(tf.cast(tf.argmax(self._pred, 1), tf.int32), self._y)
-
-        self._accuracy = tf.reduce_mean(tf.cast(self._correct_pred, tf.float32))
-        
     
-    def __build_input(self, vocab_size):
-        #tf Graph input
-        self._x = tf.placeholder(tf.int32, [None, FLAGS.model_size, FLAGS.sentence_length])
-#         self._y =  tf.placeholder(tf.int32, [None, n_classes])
-        self._y =  tf.placeholder(tf.int32, [None])
-        self._trimmed = tf.placeholder(tf.float32, [None, FLAGS.model_size])
-        self._sequence_length = tf.placeholder(tf.int32, [None])
-        self._keep_prob = tf.placeholder(tf.float32, [])
-        self._dropout_flag = tf.placeholder(tf.bool, [])
-        self._embedding_placeholder = tf.placeholder(tf.float32, [vocab_size, FLAGS.embedding_size])
-
-    def __build_vars(self, vocab_size):
-#         initializer=tf.random_normal_initializer(stddev=0.1)
-#         pad_word_slot = tf.zeros([1, FLAGS.embedding_size]) #pad slot embedding
-#         EMB = tf.concat([ pad_word_slot, self._init([vocab_size, FLAGS.embedding_size]) ], 0)
-#          
-#         self._EMB = tf.Variable(EMB, name="EMB")
-#         self._nil_vars = set([mat.name for mat in [self._EMB]])
-#         print(self._nil_vars)
-        self._embedding = tf.Variable(tf.constant(0.0, shape=[vocab_size, FLAGS.embedding_size]), trainable=True, name="embedding") 
-        self._nil_vars = set([mat.name for mat in [self._embedding]])
-
-
-        #define weights
-        self._weights = {
-            'out': tf.Variable(self._init([FLAGS.hidden_size, n_classes]))
-            }
-        self._ff_weights = {
-            'ff_weights': tf.Variable(self._init([FLAGS.cell_size*2, FLAGS.hidden_size]))
-        }
-        self._ff_bias = {
-            'ff_biases': tf.Variable(self._init([FLAGS.hidden_size]))
-            }
-        
-        self._biases = {
-            'out': tf.Variable(self._init([n_classes]))
-            }
-     
-    #bidirectional_rnn: can accept LSTM cell or GRU cell
-    def __bidirectional_rnn(self, cell_fw, cell_bw, inputs, sequence_length, scope=None):
-        """bidirectional rnn with concatenated outputs and states"""
-        with tf.variable_scope(scope or 'birnn'):
-            ((fw_outputs, bw_outputs), (fw_state, bw_state)) = (tf.nn.bidirectional_dynamic_rnn(cell_fw=cell_fw, cell_bw=cell_bw, inputs=inputs, sequence_length=sequence_length, dtype=tf.float32, scope=scope))
-            #concatenate ouputs
-            outputs = tf.concat((fw_outputs, bw_outputs), 2)
-#             state = tf((fw_state, bw_state), 1)
-            
-            #concatenates states
-            if isinstance(fw_state, LSTMStateTuple):
-                state_c = tf.concat((fw_state.c, bw_state.c), 1, name='bidirectional_concat_c')
-                state_h = tf.concat((fw_state.h, bw_state.h), 1, name='bidirectional_concat_h')
-                state = LSTMStateTuple(c=state_c, h=state_h)
-            elif isinstance(fw_state, tf.Tensor):
-                state = tf.concat((fw_state, bw_state), 1, name='bidirectional_concat')   
-                            
-            #shape of outputs: [batch_size, model_size, 2*cell_size]
-            return outputs, state
-
-    #construct neural network
-    def __rnn2(self, x, trimmed, sequence_length, keep_prob, dropout_flag):
-        #prepare data shape to match 'rnn' function requirements
-        #current data input shape: (batch_size, model_size, sentence_word_number)
-        #required shape: 'model size' tensors list of shape(batch_size, embedding_size)
-        
-        #the shape of embedded_batch_x is (batch_size, model_size, sentence_word_number, embedding_size)
-#         embedded_batch_x = tf.nn.embedding_lookup(self._EMB, tf.cast(x, "int32"), name="embedding_lookup")
-        embedded_batch_x = tf.nn.embedding_lookup(self._embedding, x, name="embedding_lookup")
-        #reduce the dimension of embedded_batch_x into the shape of (batch_size, model_size, embedding_size)
-        reduced_batch_x = tf.reduce_sum(embedded_batch_x, axis=2)
-        averaged_batch_x = reduced_batch_x/tf.expand_dims(trimmed, -1)
-        x = averaged_batch_x
-
-        #x = tf.layers.dropout(x, rate = 0.5, training = dropout_flag, seed=FLAGS.seed)
-        x = tf.layers.dropout(x, rate = 0.5, training = dropout_flag)
-
-        
-        #returned state is not in the same format for LSTMCell and GRUCell
-        output, _ = self.__bidirectional_rnn(self._fw_cell, self._bw_cell, x, sequence_length)
-        # As we want to do classification, we only need the last output from LSTM.
-#         output = output[:,0,:]
-        output = tf.reduce_max(output, axis = 1)
-        #output = tf.layers.dropout(output, rate = 0.5, training = dropout_flag, seed=FLAGS.seed)
-        output = tf.layers.dropout(output, rate = 0.5, training = dropout_flag)
-        ''''h = tf.nn.relu(tf.matmul(output, self._ff_weights['ff_weights'])+self._ff_bias['ff_biases'])
-                
-        return tf.matmul(h, self._weights['out'])+self._biases['out']'''
-        return output
-    
-    def __zero_nil_slot(self, t, name=None):
-        """Overwrites the nil_slot (first row) of the input Tensor with zeros.
-        The nil_slot is a dummy slot and should not be trained and influence
-        the training algorithm."""
-        with tf.name_scope(name="zero_nil_slot", values=[t]):
-#         with op_scope(values=[t], name=name, default_name="zero_nil_slot") as name:
-            t = tf.convert_to_tensor(t, dtype=tf.float32,)
-            s = tf.shape(t)[1]
-            z = tf.zeros(tf.stack([1, s]))   
-        return tf.concat([z, tf.slice(t, [1, 0], [-1, -1])], 0)
-
 def read_index_file(file_name):
     with open(file_name, 'r') as f:
         data = f.read()
@@ -654,7 +696,7 @@ def read_index_file(file_name):
             data[i] = int(data[i])
             
         return data
-    
+
 def get_file_index(filename_list):
     index_list = []
     for i in range(0, len(filename_list)):
@@ -663,7 +705,7 @@ def get_file_index(filename_list):
         index_list.append(int(filename)-1)
     return index_list
 
-def custom_generator(generator, dir, text_input, trimmed, sentences_length_per_article, shuffle_flag, flag=None):
+'''def custom_generator(generator, dir, text_input, sentence_trimmed_input, trimmed_nb_sentences_input, shuffle_flag, flag=None):
         gen = generator.flow_from_directory(dir, target_size = (FLAGS.img_height, FLAGS.img_width),
                                               class_mode = 'categorical',
                                               batch_size = FLAGS.batch_size,
@@ -672,14 +714,68 @@ def custom_generator(generator, dir, text_input, trimmed, sentences_length_per_a
         while True:
             X_triple = gen.next()
             filename = X_triple[2]
-            #if flag == 'train':
-            #    print(i, filename)
-            #    print(X_triple[0].shape, X_triple[1].shape)
             index_list = get_file_index(filename)
             batch_text_X = text_input[index_list]
-            batch_trimmed_nb_sentences = trimmed[index_list]
-            batch_sentences_per_article = sentences_length_per_article[index_list]
-            yield [X_triple[0], batch_text_X, batch_trimmed_nb_sentences, batch_sentences_per_article], X_triple[1]
+            #sentence length for each sentence in one article
+            batch_sentence_trimmed = sentence_trimmed_input[index_list]
+            #nb of sentences in one article
+            batch_trimmed_nb_sentences = trimmed_nb_sentences_input[index_list]
+            yield [batch_text_X, batch_sentence_trimmed, batch_trimmed_nb_sentences, X_triple[0]], X_triple[1]'''
+
+def custom_generator(generator, dir, text_input, shuffle_flag, flag=None):
+        gen = generator.flow_from_directory(dir, target_size = (FLAGS.img_height, FLAGS.img_width),
+                                              class_mode = 'categorical',
+                                              batch_size = FLAGS.batch_size,
+                                              shuffle=shuffle_flag)
+
+        while True:
+            X_triple = gen.next()
+            filename = X_triple[2]
+            index_list = get_file_index(filename)
+            batch_text_X = text_input[index_list]
+            yield [X_triple[0], batch_text_X], X_triple[1]
+            
+def average_sentence(x):    
+    import tensorflow as tf
+    FLAGS = tf.flags.FLAGS 
+    actual_x = x[0]
+    trimmed = x[1]
+    #print(actual_x.shape)
+    #print(trimmed.shape)
+    reduced_sum = tf.reduce_sum(actual_x, axis=2)
+    #print(reduced_sum.shape)
+    average = reduced_sum/tf.expand_dims(trimmed, -1)
+    print('average shape before return')
+    print(average.shape)
+    return average
+
+def average_sentence_output_shape(input_shape):
+    import tensorflow as tf
+    FLAGS = tf.flags.FLAGS
+    shape = list(input_shape)
+    print('haha')
+    print(shape)
+    return (None, FLAGS.model_size, FLAGS.embedding_size)
+
+def average_doc(x):
+    import tensorflow as tf
+    FLAGS = tf.flags.FLAGS
+    actual_doc = x[0]
+    actual_length = x[1]
+    reduced_sum = tf.reduce_sum(actual_doc, axis=1)
+    average = reduced_sum/actual_length
+    print('doc level shape before return')
+    print(average.shape)
+    return average
+
+def average_doc_output_shape(input_shape):
+    import tensorflow as tf
+    FLAGS = tf.flags.FLAGS
+    shape = list(input_shape)
+    print('doc level haha')
+    print(shape)
+    return (None, 2*FLAGS.cell_size)
+
 
 if __name__ == '__main__':
     para_info = get_processor_version()
@@ -696,14 +792,14 @@ if __name__ == '__main__':
         Y[i] = qualities.index(Y[i].lower())
 
     Y = Y[:FLAGS.MAX_FILE_ID]
-    nb_fa_total = Y.count(0)
+    '''nb_fa_total = Y.count(0)
     nb_ga_total = Y.count(1)
     nb_b_total = Y.count(2)
     nb_c_total = Y.count(3)
     nb_start_total = Y.count(4)
     nb_stub_total = Y.count(5)
     logger.info("total number of fa: %d,  ga: %d, b class: %d, c class: %d, start: %d, stub: %d", nb_fa_total, nb_ga_total, nb_b_total, nb_c_total, nb_start_total, nb_stub_total)
-    result_file.write("total number of fa: "+str(nb_fa_total)+" ga: "+str(nb_ga_total)+" b class: "+str(nb_b_total)+" c class: "+str(nb_c_total)+" start: "+str(nb_start_total)+" stub: "+str(nb_stub_total)+"\n")
+    result_file.write("total number of fa: "+str(nb_fa_total)+" ga: "+str(nb_ga_total)+" b class: "+str(nb_b_total)+" c class: "+str(nb_c_total)+" start: "+str(nb_start_total)+" stub: "+str(nb_stub_total)+"\n")'''
     Y = np.array(Y)
     
     string_sentences = "sentences_"+str(FLAGS.model_size)+".txt"
@@ -763,79 +859,93 @@ if __name__ == '__main__':
 
     logger.info('Finish reading data')
     result_file.write("Finish reading data \n")
-
-
-    logger.info("%d fold validation", nfolds)
-    result_file.write(str(nfolds)+" fold validation \n")
-    result_file.flush()
+    #FLAGS.model_size=35
     
-    lstm = LSTM(fw_cell=LSTMCell(FLAGS.cell_size), bw_cell = LSTMCell(FLAGS.cell_size), max_grad_norm=FLAGS.max_grad_norm, vocab_size=vocab_size)
+    Y = to_categorical(np.asarray(Y), nb_classes=FLAGS.nb_classes)
+    
+    #static model
+    text_input = Input(shape=(FLAGS.model_size, FLAGS.sentence_length))
+    embedding_layer = Embedding(vocab_size, FLAGS.embedding_size, weights=[embedding_matrix], mask_zero=False, input_length=FLAGS.sentence_length*FLAGS.model_size, trainable=True, input_shape=(FLAGS.model_size, FLAGS.sentence_length))(text_input)
+    reshaped_word_embedding = Reshape(target_shape=(FLAGS.sentence_length, FLAGS.embedding_size*FLAGS.model_size))(embedding_layer)
+    sentence_embedding = keras.layers.GlobalAveragePooling1D()(reshaped_word_embedding)
+    reshaped_sentence_embedding = Reshape(target_shape=(FLAGS.model_size, FLAGS.embedding_size))(sentence_embedding)
+    dropped_sentence_embedding = Dropout(0.5)(reshaped_sentence_embedding)
+    lstm_output_sequence = Bidirectional(LSTM(FLAGS.cell_size, return_sequences=True))(dropped_sentence_embedding)
+    lstm_output = keras.layers.GlobalAvgPool1D()(lstm_output_sequence)
+    dropped_lstm_output = Dropout(0.5)(lstm_output)
+    
+    #dynamic model
+    '''sentence_input = Input(shape=(FLAGS.model_size, FLAGS.sentence_length,), dtype='int32')
+    sentence_trimmed_input = Input(shape=(FLAGS.model_size,), dtype='float32')
+    embedding_layer = Embedding(vocab_size, FLAGS.embedding_size, weights=[embedding_matrix], mask_zero=True, input_length=FLAGS.model_size*FLAGS.sentence_length, trainable=True, input_shape=(FLAGS.model_size, FLAGS.sentence_length,))(sentence_input)
+    averaged_sentence = Lambda(average_sentence, output_shape=average_sentence_output_shape)([embedding_layer, sentence_trimmed_input])
+    
+    dropped_sentence_embedding = Dropout(0.5)(averaged_sentence)
+    lstm_output_sequence = Bidirectional(LSTM(FLAGS.cell_size, return_sequences=True))(dropped_sentence_embedding)
+    trimmed_nb_sentences_input = Input(shape=(1,), dtype='float32')
+    lstm_output = Lambda(average_doc, output_shape=average_doc_output_shape)([lstm_output_sequence, trimmed_nb_sentences_input])
+    dropped_lstm_output = Dropout(0.5)(lstm_output)'''
 
-    sess = tf.Session()
-    init = tf.global_variables_initializer()
-    sess.run(init)
-    sess.run(lstm._embedding_init, feed_dict={lstm._embedding_placeholder:embedding_matrix})
-    logger.info('initialization finished')
-    
-    K.set_session(sess)
-    
-    image_input = tf.keras.layers.Input(shape=(FLAGS.img_width, FLAGS.img_height, 3))
-    base_model = tf.keras.applications.inception_v3(weights='imagenet', include_top=False, input_shape=(FLAGS.img_width, FLAGS.img_height, 3))
+    image_input = Input(shape=(FLAGS.img_width, FLAGS.img_height, 3))
+    base_model = applications.InceptionV3(weights="imagenet", include_top=False, input_shape=(FLAGS.img_width, FLAGS.img_height, 3))
+    #penultimate_layer = base_model.output
     penultimate_layer = base_model(image_input)
     #use dropout of ratio 0.5
-    dropped_penultimate_layer = tf.keras.layers.Dropout(0.5)(penultimate_layer)
-    inception_features = tf.keras.layers.GlobalAveragePooling2D(name='avg_pool')(dropped_penultimate_layer)
+    dropped_penultimate_layer = Dropout(0.5)(penultimate_layer)
+    inception_features = GlobalAveragePooling2D(name='avg_pool')(dropped_penultimate_layer)
     
-    joint = tf.keras.layers.concatenate([lstm._pred, inception_features], axis=1)
-    joint = tf.keras.layers.Dense(512, activation='relu')(joint)
-    predictions = tf.keras.layers.Dense(6, activation='softmax', name='predictions')(joint)
+    
+    joint = merge([dropped_lstm_output, inception_features], mode='concat', concat_axis=1)
+    joint = Dense(512, activation='relu')(joint)
+    predictions = Dense(FLAGS.nb_classes, activation='softmax', name='predictions')(joint)
     
     # this is the model we will train
-    model_final = tf.keras.models.Model(inputs=[image_input, text_input, ], outputs=predictions)
-    
+    #model_final = Model(inputs=[sentence_input, sentence_trimmed_input, trimmed_nb_sentences_input, image_input], outputs=predictions)
+    model_final = Model(inputs=[image_input, text_input], outputs=predictions)
+       
     # compile the model (should be done *after* setting layers to non-trainable)
     model_final.compile(loss="categorical_crossentropy", optimizer=optimizers.Adam(lr=FLAGS.learning_rate), metrics=["accuracy"])
     #model_final.compile(loss="categorical_crossentropy", optimizer=optimizers.SGD(lr=FLAGS.learning_rate), metrics=["accuracy"])
     
     print(model_final.summary())
     
-    train_datagen = tf.keras.preprocessing.image.ImageDataGenerator(fill_mode="nearest", zoom_range=0.1, \
+    train_datagen = ImageDataGenerator(fill_mode="nearest", zoom_range=0.1, \
                                        width_shift_range=0.1, height_shift_range=0.1, rotation_range=0)
     
-    vali_datagen = tf.keras.preprocessing.image.ImageDataGenerator()
-    test_datagen = tf.keras.preprocessing.image.ImageDataGenerator()
+    vali_datagen = ImageDataGenerator()
+    test_datagen = ImageDataGenerator()
 
-    train_generator = custom_generator(train_datagen, train_data_dir, X, trimmed_nb_sentences, sentences_length_per_article, shuffle_flag=True, flag='train')
-    validation_generator = custom_generator(vali_datagen, validation_data_dir, X, trimmed_nb_sentences, sentences_length_per_article, shuffle_flag=False)
-    test_generator = custom_generator(test_datagen, test_data_dir, X, trimmed_nb_sentences, sentences_length_per_article, shuffle_flag=False)
-    
+#     train_generator = custom_generator(train_datagen, FLAGS.train_data_dir, X, sentences_length_per_article, trimmed_nb_sentences, shuffle_flag=True, flag='train')
+#     validation_generator = custom_generator(vali_datagen, FLAGS.validation_data_dir, X, sentences_length_per_article, trimmed_nb_sentences, shuffle_flag=False)
+#     test_generator = custom_generator(test_datagen, FLAGS.test_data_dir, X, sentences_length_per_article, trimmed_nb_sentences, shuffle_flag=False)
+    train_generator = custom_generator(train_datagen, FLAGS.train_data_dir, X, shuffle_flag=True, flag='train')
+    validation_generator = custom_generator(vali_datagen, FLAGS.validation_data_dir, X, shuffle_flag=False)
+    test_generator = custom_generator(test_datagen, FLAGS.test_data_dir, X, shuffle_flag=False)
+    test_generator1 = test_datagen.flow_from_directory(FLAGS.test_data_dir, target_size=(FLAGS.img_height, FLAGS.img_width), \
+                                class_mode='categorical', shuffle=False)
     
     # Save the model according to the conditions  
-    checkpoint = tf.keras.callbacks.ModelCheckpoint(FLAGS.saved_model_name, monitor='val_acc', verbose=1, save_best_only=True, save_weights_only=False, mode='auto', period=1)
-    early = tf.keras.callbacksEarlyStopping(monitor='val_acc', min_delta=0, patience=FLAGS.successive_decrease, verbose=2, mode='auto')
+    checkpoint = ModelCheckpoint(FLAGS.saved_model_name, monitor='val_acc', verbose=1, save_best_only=True, save_weights_only=False, mode='auto', period=1)
+    early = EarlyStopping(monitor='val_acc', min_delta=0, patience=20, verbose=2, mode='auto')
+    
+    #K.set_session(K.tf.Session(config=K.tf.ConfigProto(intra_op_parallelism_threads=2, inter_op_parallelism_threads=2)))
     
     # Train the model 
-    model_final.fit_generator(train_generator, steps_per_epoch=nb_train_samples/float(FLAGS.batch_size), epochs=FLAGS.nb_epochs, max_queue_size=10,\
-                              validation_data=validation_generator, validation_steps=np.ceil(nb_validation_samples/float(FLAGS.batch_size)), callbacks=[checkpoint, early])
-    
-    
-    
-    #model_final.fit_generator(train_generator, samples_per_epoch=nb_train_samples, epochs=FLAGS.epoch2, \
-    #                         validation_data=validation_generator, validation_steps=np.ceil(nb_validation_samples/float(batch_size)), callbacks=[checkpoint, early])
+    model_final.fit_generator(train_generator, steps_per_epoch=FLAGS.nb_train_samples/float(FLAGS.batch_size), epochs=FLAGS.nb_epochs, max_queue_size=10,\
+                              validation_data=validation_generator, validation_steps=np.ceil(FLAGS.nb_validation_samples/float(FLAGS.batch_size)), callbacks=[checkpoint, early])
     
     del model_final
     print('***************************************')
     print('start to predict on the test set using saved model best on the validation set')
-    model_final = tf.keras.models.load_model(FLAGS.saved_model_name)
-    result1 = model_final.predict_generator(test_generator, steps=np.ceil(nb_test_samples/float(FLAGS.batch_size)), use_multiprocessing=False, verbose=1)
-    result2 = model_final.evaluate_generator(test_generator, steps=np.ceil(nb_test_samples/float(FLAGS.batch_size)), use_multiprocessing=False)
+    model_final = load_model(FLAGS.saved_model_name)
+    result1 = model_final.predict_generator(test_generator, steps=np.ceil(FLAGS.nb_test_samples/float(FLAGS.batch_size)), use_multiprocessing=False, verbose=1)
+    result2 = model_final.evaluate_generator(test_generator, steps=np.ceil(FLAGS.nb_test_samples/float(FLAGS.batch_size)), use_multiprocessing=False)
     
     print('result2')
     print(result2)
     y_pred = np.argmax(result1, axis=1)
     print('Confusion Matrix')
-    print(confusion_matrix(test_generator.classes, y_pred))
+    print(confusion_matrix(test_generator1.classes, y_pred))
     print('Classification Report')
     target_names = ['0', '1', '2', '3', '4', '5']
-    print(classification_report(test_generator.classes, y_pred, target_names=target_names))
-
+    print(classification_report(test_generator1.classes, y_pred, target_names=target_names))

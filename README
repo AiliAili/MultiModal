@@ -3,6 +3,8 @@ You can get access to the dataset used in our paper via the following link.
 
 https://drive.google.com/open?id=19L8l1J1EiW8aWaB4IXcZXpUhll9zAhsA
 
+Citation:
+
 @inproceedings{Shen:19,
   author    = {Aili Shen and
                Bahar Salehi and
@@ -14,3 +16,22 @@ https://drive.google.com/open?id=19L8l1J1EiW8aWaB4IXcZXpUhll9zAhsA
   pages     = {107--110},
   year      = {2019}
 }
+
+Software version:
+keras=2.0.8
+tensorflow=1.4.0
+python=2.7.12
+
+
+The code named keras_inception_v3_plus_test.py is to test whether a model works in extracting visual features from screenshots
+to run this code, I use the following script: 
+"CUDA_VISIBLE_DEVICES=0 python keras_inception_v3_plus_test.py  --img_width 500  --img_height  500  --batch_size 16"
+
+To run bi_lstm_inception.py, a joint model extracting textual and visual features from both sources. We need to make modifications of keras source code:
+I modify the source code of keras about the function of "keras.preprocessing.image.ImageDataGenerator.flow_from_directory" to make it working for our joint model. And I also upload my edited version on Github named image.py. You can also use this file to replace yours at the directory of /install_path/lib/python2.7/site-packages/keras/preprocessing/image.py. Basically, I modified the code line of 1016-1067.
+To run the joint model, I use the following script:
+"CUDA_VISIBLE_DEVICES=1  python  bi_lstm_inception.py   --data_flag 5 --recompute_flag False --train_data_dir  ./training_1000_2000  --validation_data_dir  ./validation_1000_2000  --test_data_dir  ./test_1000_2000  --img_width 500  --img_height  500   --nb_train_samples 24000   --nb_validation_samples 3000   --nb_test_samples 2794  --batch_size  16"
+
+So I recommend you to build two virtual environments, one unmodified version for an inception model to extract visual features. And another one modified as described above to run the joint model.
+
+Stay tuned.
