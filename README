@@ -16,6 +16,17 @@ Citation:
   pages     = {107--110},
   year      = {2019}
 }
+and 
+
+@article{Shen:20,
+  title={A General Approach to Multimodal Document Quality Assessment},
+  author={Shen, Aili and Salehi, Bahar and Qi, Jianzhong and Baldwin, Timothy},
+  journal={Journal of Artificial Intelligence Research},
+  volume={68},
+  pages={607--632},
+  year={2020}
+}
+
 
 Software version:
 keras=2.0.8
